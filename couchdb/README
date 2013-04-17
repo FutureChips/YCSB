@@ -1,0 +1,24 @@
+This CouchDB client was developed by Flux7 Labs for Cloudant Inc. The client uses 
+LightCouch to interface to the database. The default parameteres for the database to
+connect to are:
+
+  couchdb.name=ycsb
+  couchdb.createdb.if-not-exist=true
+  couchdb.protocol=http
+  couchdb.host=127.0.0.1
+  couchdb.port=5984
+  couchdb.username=
+  couchdb.password=
+
+The client reads parameters passed to YCSB on the command line. Use these to override the 
+value of the above parameters. '-P' is used for passing a file containing parameters while 
+'-p' is used to pass a single parameter. For example to access a private database running on 
+Cloudant servers pass a file containing the parameters:
+couchdb.name=ycsb
+couchdb.createdb.if-not-exist=true
+couchdb.protocol=http
+couchdb.host=username.cloudant.com
+couchdb.port=5984
+couchdb.username=username
+couchdb.password=password
+
