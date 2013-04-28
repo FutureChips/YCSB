@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from subprocess import call
+import subprocess
 import argparse
 
 class regress:
@@ -10,20 +10,29 @@ class regress:
             'cloudant2' : ' -P accounts/cloudant2-flux7-2.props',
         }
         self.workloads = {
-            'equal'     : ' -P workload/workloada',
-            'readmostly': ' -P workload/workloadb',
-            'readinsert': ' -P workload/workloadd',
-            'rmw'       : ' -P workload/workloadf',
+            'equal'     : ' -P workloads/workloada',
+            'readmostly': ' -P workloads/workloadb',
+            'readinsert': ' -P workloads/workloadd',
+            'rmw'       : ' -P workloads/workloadf',
         }
         self.configs   = {
-            'default'   : ' -P configs/large.dat',
+            'default'    : "",
+            'large'     : ' -P configs/large.dat',
         }
     def run_tests(self,platforms,workloads,configs):
         for platform in platforms:
-           for workload in workloads:
-               for config in configs:
-                   print "bin/ycsb load "+self.platforms[platform]+self.workloads[workload]+\
-                       self.configs[config]
+            for workload in workloads:
+                for config in configs:
+                    base_cmd = "couchdb "+self.platforms[platform]+\
+                               self.workloads[workload]+self.configs[config]
+                    load_cmd = "bin/ycsb load "+base_cmd
+                    run_cmd = "bin/ycsb run "+base_cmd
+                    try:
+                        load_log = subprocess.check_output(str.split(load_cmd))
+                        run_log = subprocess.check_output(str.split(run_cmd))
+                    except subprocess.CalledProcessError, e:
+                        print "Non-zero error code, output:\n",e.output
+                    print "Command:\n",run_cmd,"\n\nOutput:\n",run_log
     def launch(self,args):
         p = str.split( args.platforms,',')
         w = str.split( args.workloads,',')
