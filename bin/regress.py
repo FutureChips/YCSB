@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import subprocess
 import argparse
+import re
 
 class regress:
     def __init__(self):
@@ -16,23 +17,30 @@ class regress:
             'rmw'       : ' -P workloads/workloadf',
         }
         self.configs   = {
-            'default'    : "",
+            'default'   : "",
+            '15m'       : ' -P configs/15m.dat',
             'large'     : ' -P configs/large.dat',
         }
+
     def run_tests(self,platforms,workloads,configs):
         for platform in platforms:
             for workload in workloads:
                 for config in configs:
                     base_cmd = "couchdb "+self.platforms[platform]+\
-                               self.workloads[workload]+self.configs[config]
+                               self.workloads[workload]+self.configs[config]+\
+                               ' -P configs/1m.ops'
                     load_cmd = "bin/ycsb load "+base_cmd
-                    run_cmd = "bin/ycsb run "+base_cmd
+                    run_cmd = "bin/ycsb run "+base_cmd+' -threads 128'
                     try:
                         load_log = subprocess.check_output(str.split(load_cmd))
                         run_log = subprocess.check_output(str.split(run_cmd))
                     except subprocess.CalledProcessError, e:
                         print "Non-zero error code, output:\n",e.output
                     print "Command:\n",run_cmd,"\n\nOutput:\n",run_log
+                    # results[platform][workload][config]['run_log'] = run_log
+                    # throughput = re.search('\[OVERALL\], Throughput\(ops\/sec\), ([0-9]|\.)+',run_log)
+                    # results[platform][workload][config]['throughput']
+
     def launch(self,args):
         p = str.split( args.platforms,',')
         w = str.split( args.workloads,',')
