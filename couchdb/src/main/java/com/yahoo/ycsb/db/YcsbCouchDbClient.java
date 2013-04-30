@@ -28,6 +28,8 @@ import com.yahoo.ycsb.StringByteIterator;
  * 
  */
 public class YcsbCouchDbClient extends DB {
+        public static final String OPERATION_RETRY_PROPERTY = "couchdb.operationretries";
+        public static final String OPERATION_RETRY_PROPERTY_DEFAULT = "300";
 
 	private CouchDbClient dbClient;
 	private CouchDbProperties couchDbProperties;
@@ -35,6 +37,8 @@ public class YcsbCouchDbClient extends DB {
 	private static final Logger LOGGER = LoggerFactory
 			.getLogger(YcsbCouchDbClient.class);
 
+        Exception errorexception = null;
+        int OperationRetries;
 	/* YCSB requires a no-arg constructor */
 	public YcsbCouchDbClient() {
 
@@ -48,12 +52,11 @@ public class YcsbCouchDbClient extends DB {
 
 		Properties ycsbProps = getProperties();
 		couchDbProperties = Utils.getConnectionProperties(ycsbProps);
-
 		dbClient = new CouchDbClient(couchDbProperties);
-
 		DesignDocument exampleDoc = dbClient.design().getFromDesk("scan");
 		dbClient.design().synchronizeWithDb(exampleDoc);
-
+                OperationRetries = Integer.parseInt(ycsbProps.getProperty(OPERATION_RETRY_PROPERTY,
+                                                                          OPERATION_RETRY_PROPERTY_DEFAULT));
 	}
 	/**
      * Insert a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified
@@ -191,34 +194,43 @@ public class YcsbCouchDbClient extends DB {
 		 * we will set tablename = database name since couchdb is one giant data
 		 * store with no notion of tables/collections
 		 */
-
 		table = couchDbProperties.getDbName();
 
-		/*
-		 * Same as with deletion function , we need to first find the record to
-		 * read its revision
-		 */
-		JsonObject record;
-		try {
+                for (int i = 0; i < OperationRetries; i++){
+                        /*
+                         * Same as with deletion function , we need to first find the record to
+                         * read its revision
+                         */
+                        JsonObject record;
+                        try {
+                                record = dbClient.find(JsonObject.class, key);
+                        } catch (NoDocumentException ex) {
+                                LOGGER.error(
+                                             "tried to update document with key {} , but document does not exist",
+                                             key);
+                                return 1;
+                        }
+                        HashMap<String, String> stringFields = StringByteIterator
+                                .getStringMap(fields);
 
-			record = dbClient.find(JsonObject.class, key);
-		} catch (NoDocumentException ex) {
-			LOGGER.error(
-					"tried to update document with key {} , but document does not exist",
-					key);
-			return 1;
-		}
-
-		HashMap<String, String> stringFields = StringByteIterator
-				.getStringMap(fields);
-
-		stringFields.put("_id", key);
-		stringFields.put("_rev", record.get("_rev").getAsString());
-
-		dbClient.update(stringFields);
-
-		return 0;
-	}
+                        stringFields.put("_id", key);
+                        stringFields.put("_rev", record.get("_rev").getAsString());
+                        try{
+                                dbClient.update(stringFields);
+                                return 0;
+                        }catch( DocumentConflictException e ){
+                                LOGGER.info("Detected conflict when attempting to update key {}", key);
+                                errorexception = e;                
+                        }
+                        try{
+                                Thread.sleep(500);
+                        }catch(InterruptedException e){}            
+                }
+                LOGGER.error("Failed to update key {}, retries due to conflicts exceeded limit", key);
+                errorexception.printStackTrace();
+                errorexception.printStackTrace(System.out);
+                return 1;
+        }
 	
 	  /**
      * Perform a range scan for a set of records in the database. Each field/value pair from the result will be stored in a HashMap.
