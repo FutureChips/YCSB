@@ -36,7 +36,7 @@ public class YcsbCouchDbClient extends DB {
 
 	private static final Logger LOGGER = LoggerFactory
 			.getLogger(YcsbCouchDbClient.class);
-
+        private static Object lock = new Object();
         Exception errorexception = null;
         int OperationRetries;
 	/* YCSB requires a no-arg constructor */
@@ -49,14 +49,15 @@ public class YcsbCouchDbClient extends DB {
 		 * we can get the properties passed to YCSB on commandline or in
 		 * properties files and extract couchdb connection properties from them
 		 */
-
-		Properties ycsbProps = getProperties();
-		couchDbProperties = Utils.getConnectionProperties(ycsbProps);
-		dbClient = new CouchDbClient(couchDbProperties);
-		DesignDocument exampleDoc = dbClient.design().getFromDesk("scan");
-		dbClient.design().synchronizeWithDb(exampleDoc);
-                OperationRetries = Integer.parseInt(ycsbProps.getProperty(OPERATION_RETRY_PROPERTY,
-                                                                          OPERATION_RETRY_PROPERTY_DEFAULT));
+                synchronized( lock ){
+                        Properties ycsbProps = getProperties();
+                        couchDbProperties = Utils.getConnectionProperties(ycsbProps);
+                        dbClient = new CouchDbClient(couchDbProperties);
+                        DesignDocument exampleDoc = dbClient.design().getFromDesk("scan");
+                        dbClient.design().synchronizeWithDb(exampleDoc);
+                        OperationRetries = Integer.parseInt(ycsbProps.getProperty(OPERATION_RETRY_PROPERTY,
+                                                                                  OPERATION_RETRY_PROPERTY_DEFAULT));
+                }
 	}
 	/**
      * Insert a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified
