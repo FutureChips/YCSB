@@ -30,6 +30,8 @@ import com.yahoo.ycsb.StringByteIterator;
 public class YcsbCouchDbClient extends DB {
         public static final String OPERATION_RETRY_PROPERTY = "couchdb.operationretries";
         public static final String OPERATION_RETRY_PROPERTY_DEFAULT = "300";
+        public static final String BATCH_INSERT_PROPERTY = "couchdb.batchinsert";
+        public static final String BATCH_INSERT_PROPERTY_DEFAULT = "false";
 
 	private CouchDbClient dbClient;
 	private CouchDbProperties couchDbProperties;
@@ -39,6 +41,7 @@ public class YcsbCouchDbClient extends DB {
         private static Object lock = new Object();
         Exception errorexception = null;
         int OperationRetries;
+        boolean batch_insert;
 	/* YCSB requires a no-arg constructor */
 	public YcsbCouchDbClient() {
 
@@ -57,6 +60,8 @@ public class YcsbCouchDbClient extends DB {
                         dbClient.design().synchronizeWithDb(exampleDoc);
                         OperationRetries = Integer.parseInt(ycsbProps.getProperty(OPERATION_RETRY_PROPERTY,
                                                                                   OPERATION_RETRY_PROPERTY_DEFAULT));
+                        batch_insert = Boolean.parseBoolean(ycsbProps.getProperty(BATCH_INSERT_PROPERTY,
+                                                                                  BATCH_INSERT_PROPERTY_DEFAULT));
                 }
 	}
 	/**
@@ -88,7 +93,11 @@ public class YcsbCouchDbClient extends DB {
 		stringFields.put("_id", key);
 
 		try {
-			dbClient.save(stringFields);
+                        if( batch_insert ){
+                                dbClient.batch(stringFields);
+                        }else{
+                                dbClient.save(stringFields);
+                        }
 		} catch (DocumentConflictException ex) {
 			/* Document with the same id already existed , return non-zero value */
 			LOGGER.error("record with {} key already exists", key);
