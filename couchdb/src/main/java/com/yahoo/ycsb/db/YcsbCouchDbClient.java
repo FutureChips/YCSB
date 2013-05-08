@@ -12,6 +12,7 @@ import org.lightcouch.CouchDbProperties;
 import org.lightcouch.DesignDocument;
 import org.lightcouch.DocumentConflictException;
 import org.lightcouch.NoDocumentException;
+import org.lightcouch.CouchDbException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,7 +40,9 @@ public class YcsbCouchDbClient extends DB {
 	private static final Logger LOGGER = LoggerFactory
 			.getLogger(YcsbCouchDbClient.class);
         private static Object lock = new Object();
-        Exception errorexception = null;
+        private static int min_sleep_wait = 250;
+        private static int max_sleep_wait=500;
+        CouchDbException errorexception = null;
         int OperationRetries;
         boolean batch_insert;
 	/* YCSB requires a no-arg constructor */
@@ -55,13 +58,46 @@ public class YcsbCouchDbClient extends DB {
                 synchronized( lock ){
                         Properties ycsbProps = getProperties();
                         couchDbProperties = Utils.getConnectionProperties(ycsbProps);
-                        dbClient = new CouchDbClient(couchDbProperties);
-                        DesignDocument exampleDoc = dbClient.design().getFromDesk("scan");
-                        dbClient.design().synchronizeWithDb(exampleDoc);
                         OperationRetries = Integer.parseInt(ycsbProps.getProperty(OPERATION_RETRY_PROPERTY,
                                                                                   OPERATION_RETRY_PROPERTY_DEFAULT));
                         batch_insert = Boolean.parseBoolean(ycsbProps.getProperty(BATCH_INSERT_PROPERTY,
                                                                                   BATCH_INSERT_PROPERTY_DEFAULT));
+                        int sleep_wait = min_sleep_wait;
+                        for (int i = 0; i < OperationRetries; ++i){
+                                try{
+                                        dbClient = new CouchDbClient(couchDbProperties);
+                                        break;
+                                }catch( CouchDbException e ){
+                                        LOGGER.info("Detected exception:"+e.toString()+" when instantiating the client");
+                                        errorexception = e;                
+                                }
+                                try{
+                                        Thread.sleep(sleep_wait);
+                                        // In line with YCSB implementation, double-sleep time but keep less than 5 minutes
+                                        if( sleep_wait < max_sleep_wait ){
+                                                sleep_wait *= 2;
+                                        }
+                                }catch(InterruptedException e){}
+                                throw new DBException(errorexception);
+                        }
+                        for (int i = 0; i < OperationRetries; ++i){
+                                try{
+                                        DesignDocument exampleDoc = dbClient.design().getFromDesk("scan");
+                                        dbClient.design().synchronizeWithDb(exampleDoc);
+                                        break;
+                                }catch( CouchDbException e ){
+                                        LOGGER.info("Detected exception:"+e.toString()+" when setting up design doc for scan");
+                                        errorexception = e;
+                                }
+                                try{
+                                        Thread.sleep(sleep_wait);
+                                        // In line with YCSB implementation, double-sleep time but keep less than 5 minutes
+                                        if( sleep_wait < max_sleep_wait ){
+                                                sleep_wait *= 2;
+                                        }
+                                }catch(InterruptedException e){}
+                                throw new DBException(errorexception);
+                        }
                 }
 	}
 	/**
@@ -75,7 +111,7 @@ public class YcsbCouchDbClient extends DB {
      */
 	@Override
 	public int insert(String table, String key,
-			HashMap<String, ByteIterator> fields) {
+			HashMap<String, ByteIterator> fields) throws CouchDbException{
 
 		/*
 		 * we will set tablename = database name since couchdb is one giant data
@@ -92,18 +128,35 @@ public class YcsbCouchDbClient extends DB {
 
 		stringFields.put("_id", key);
 
-		try {
-                        if( batch_insert ){
-                                dbClient.batch(stringFields);
-                        }else{
-                                dbClient.save(stringFields);
+                int sleep_wait = min_sleep_wait;
+                for (int i = 0; i < OperationRetries; ++i){
+                        try{
+                                try {
+                                        if( batch_insert ){
+                                                dbClient.batch(stringFields);
+                                        }else{
+                                                dbClient.save(stringFields);
+                                        }
+                                } catch (DocumentConflictException ex) {
+                                        /* Document with the same id already existed , return non-zero value */
+                                        LOGGER.error("record with {} key already exists", key);
+                                        return 1;
+                                }
+                                return 0;
+                        }catch( CouchDbException e ){
+                                LOGGER.info("Detected exception:"+e.toString()+" when attempting to insert key {}", key);
+                                errorexception = e;                
                         }
-		} catch (DocumentConflictException ex) {
-			/* Document with the same id already existed , return non-zero value */
-			LOGGER.error("record with {} key already exists", key);
-			return 1;
-		}
-		return 0;
+                        try{
+                                Thread.sleep(sleep_wait);
+                                // In line with YCSB implementation, double-sleep time but keep less than 5 minutes
+                                if( sleep_wait < max_sleep_wait ){
+                                        sleep_wait *= 2;
+                                }
+                        }catch(InterruptedException e){}            
+                }
+                LOGGER.error("Failed to read key {}, operation retry count exceeded", key);
+                throw errorexception;
 	}
 
 	/**
@@ -118,38 +171,54 @@ public class YcsbCouchDbClient extends DB {
 	
 	@Override
 	public int read(String table, String key, Set<String> fields,
-			HashMap<String, ByteIterator> result) {
+			HashMap<String, ByteIterator> result) throws CouchDbException{
 		/*
 		 * we will set tablename = database name since couchdb is one giant data
 		 * store with no notion of tables/collections
 		 */
 
 		table = couchDbProperties.getDbName();
+                int sleep_wait = min_sleep_wait;
+                for (int i = 0; i < OperationRetries; ++i){
+                        try{
+                                try {
+                                        /* Read the record as JsonObject */
+                                        JsonObject record = dbClient.find(JsonObject.class, key);
 
-		try {
-			/* Read the record as JsonObject */
-			JsonObject record = dbClient.find(JsonObject.class, key);
+                                        /*
+                                         * Iterate the JSON object and add the key,value pair to result map
+                                         * . fields set is null then add all fields to result map ,
+                                         * otherwise add only those fields which exist in fields Set
+                                         */
+                                        for (Entry<String, JsonElement> element : record.entrySet()) {
+                                                String name = element.getKey();
+                                                if (fields == null || fields.contains(name)) {
+                                                        result.put(name, new StringByteIterator(element.getValue()
+                                                                                                .getAsString()));
+                                                }
+                                        }
 
-			/*
-			 * Iterate the JSON object and add the key,value pair to result map
-			 * . fields set is null then add all fields to result map ,
-			 * otherwise add only those fields which exist in fields Set
-			 */
-			for (Entry<String, JsonElement> element : record.entrySet()) {
-				String name = element.getKey();
-				if (fields == null || fields.contains(name)) {
-					result.put(name, new StringByteIterator(element.getValue()
-							.getAsString()));
-				}
-			}
-
-		} catch (NoDocumentException ex) {
-			LOGGER.error(
-					"tried to read document with key {} , but document does not exist",
-					key);
-			return 1;
-		}
-		return 0;
+                                } catch (NoDocumentException ex) {
+                                        LOGGER.error(
+                                                     "tried to read document with key {} , but document does not exist",
+                                                     key);
+                                        return 1;
+                                }
+                                return 0;
+                        }catch( CouchDbException e ){
+                                LOGGER.info("Detected exception:"+e.toString()+" when attempting to read key {}", key);
+                                errorexception = e;                
+                        }
+                        try{
+                                Thread.sleep(sleep_wait);
+                                // In line with YCSB implementation, double-sleep time but keep less than 5 minutes
+                                if( sleep_wait < max_sleep_wait ){
+                                        sleep_wait *= 2;
+                                }
+                        }catch(InterruptedException e){}            
+                }
+                LOGGER.error("Failed to read key {}, operation retry count exceeded", key);
+                throw errorexception;
 	}
 	
 	 /**
@@ -161,29 +230,46 @@ public class YcsbCouchDbClient extends DB {
      */
 	
 	@Override
-	public int delete(String table, String key) {
+	public int delete(String table, String key) throws CouchDbException{
 		/*
 		 * we will set tablename = database name since couchdb is one giant data
 		 * store with no notion of tables/collections
 		 */
 
 		table = couchDbProperties.getDbName();
-		try {
-			/*
-			 * In CouchDB , to delete a record , you must know its revision
-			 * number , since YCSB will only pass the key , we will first have
-			 * to find the document with that key and then delete that whole
-			 * document. Deletion just by knowing key of record is not possible
-			 */
-			JsonObject record = dbClient.find(JsonObject.class, key);
-			dbClient.remove(record);
-		} catch (NoDocumentException ex) {
-			LOGGER.error(
-					"tried to remove document with key {} , but document does not exist",
-					key);
-			return 1;
-		}
-		return 0;
+                int sleep_wait = min_sleep_wait;
+                for (int i = 0; i < OperationRetries; ++i){
+                        try{
+                                try {
+                                        /*
+                                         * In CouchDB , to delete a record , you must know its revision
+                                         * number , since YCSB will only pass the key , we will first have
+                                         * to find the document with that key and then delete that whole
+                                         * document. Deletion just by knowing key of record is not possible
+                                         */
+                                        JsonObject record = dbClient.find(JsonObject.class, key);
+                                        dbClient.remove(record);
+                                } catch (NoDocumentException ex) {
+                                        LOGGER.error(
+                                                     "tried to remove document with key {} , but document does not exist",
+                                                     key);
+                                        return 1;
+                                }
+                                return 0;
+                        }catch( CouchDbException e ){
+                                LOGGER.info("Detected exception:"+e.toString()+" when attempting to delete key {}", key);
+                                errorexception = e;                
+                        }
+                        try{
+                                Thread.sleep(sleep_wait);
+                                // In line with YCSB implementation, double-sleep time but keep less than 5 minutes
+                                if( sleep_wait < max_sleep_wait ){
+                                        sleep_wait *= 2;
+                                }
+                        }catch(InterruptedException e){}            
+                }
+                LOGGER.error("Failed to delete key {}, retries exceeded limit", key);
+                throw errorexception;
 	}
 	
 	 /**
@@ -198,48 +284,50 @@ public class YcsbCouchDbClient extends DB {
 	
 	@Override
 	public int update(String table, String key,
-			HashMap<String, ByteIterator> fields) {
+			HashMap<String, ByteIterator> fields) throws CouchDbException{
 
 		/*
 		 * we will set tablename = database name since couchdb is one giant data
 		 * store with no notion of tables/collections
 		 */
 		table = couchDbProperties.getDbName();
-
-                for (int i = 0; i < OperationRetries; i++){
-                        /*
-                         * Same as with deletion function , we need to first find the record to
-                         * read its revision
-                         */
-                        JsonObject record;
-                        try {
-                                record = dbClient.find(JsonObject.class, key);
-                        } catch (NoDocumentException ex) {
-                                LOGGER.error(
-                                             "tried to update document with key {} , but document does not exist",
-                                             key);
-                                return 1;
-                        }
-                        HashMap<String, String> stringFields = StringByteIterator
-                                .getStringMap(fields);
-
-                        stringFields.put("_id", key);
-                        stringFields.put("_rev", record.get("_rev").getAsString());
+                int sleep_wait = min_sleep_wait;
+                for (int i = 0; i < OperationRetries; ++i){
                         try{
+                                /*
+                                 * Same as with deletion function , we need to first find the record to
+                                 * read its revision
+                                 */
+                                JsonObject record;
+                                try {
+                                        record = dbClient.find(JsonObject.class, key);
+                                } catch (NoDocumentException ex) {
+                                        LOGGER.error(
+                                                     "tried to update document with key {} , but document does not exist",
+                                                     key);
+                                        return 1;
+                                }
+                                HashMap<String, String> stringFields = StringByteIterator
+                                        .getStringMap(fields);
+
+                                stringFields.put("_id", key);
+                                stringFields.put("_rev", record.get("_rev").getAsString());
                                 dbClient.update(stringFields);
                                 return 0;
-                        }catch( DocumentConflictException e ){
-                                LOGGER.info("Detected conflict when attempting to update key {}", key);
+                        }catch( CouchDbException e ){
+                                LOGGER.info("Detected exception:"+e.toString()+" when attempting to update key {}", key);
                                 errorexception = e;                
                         }
                         try{
-                                Thread.sleep(500);
+                                Thread.sleep(sleep_wait);
+                                // In line with YCSB implementation, double-sleep time but keep less than 5 minutes
+                                if( sleep_wait < max_sleep_wait ){
+                                        sleep_wait *= 2;
+                                }
                         }catch(InterruptedException e){}            
                 }
-                LOGGER.error("Failed to update key {}, retries due to conflicts exceeded limit", key);
-                errorexception.printStackTrace();
-                errorexception.printStackTrace(System.out);
-                return 1;
+                LOGGER.error("Failed to update key {}, retries exceeded limit", key);
+                throw errorexception;
         }
 	
 	  /**
