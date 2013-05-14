@@ -1,6 +1,8 @@
 package com.yahoo.ycsb.db;
 
 import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map.Entry;
 import java.util.Properties;
@@ -33,10 +35,11 @@ public class YcsbCouchDbClient extends DB {
         public static final String OPERATION_RETRY_PROPERTY_DEFAULT = "300";
         public static final String BATCH_INSERT_PROPERTY = "couchdb.batchinsert";
         public static final String BATCH_INSERT_PROPERTY_DEFAULT = "false";
+        public static final String BULK_INSERT_PROPERTY = "couchdb.bulkinsert";
+        public static final String BULK_INSERT_PROPERTY_DEFAULT = "0";
 
 	private CouchDbClient dbClient;
 	private CouchDbProperties couchDbProperties;
-
 	private static final Logger LOGGER = LoggerFactory
 			.getLogger(YcsbCouchDbClient.class);
         private static Object lock = new Object();
@@ -45,9 +48,12 @@ public class YcsbCouchDbClient extends DB {
         CouchDbException errorexception = null;
         int OperationRetries;
         boolean batch_insert;
+        int bulk_insert_count;
+
+        HashMap <String, List<HashMap<String,String> > > pending_bulk_inserts;
 	/* YCSB requires a no-arg constructor */
 	public YcsbCouchDbClient() {
-
+            pending_bulk_inserts = new HashMap <String, List<HashMap<String,String> > >();
 	}
 
 	public void init() throws DBException {
@@ -62,6 +68,8 @@ public class YcsbCouchDbClient extends DB {
                                                                                   OPERATION_RETRY_PROPERTY_DEFAULT));
                         batch_insert = Boolean.parseBoolean(ycsbProps.getProperty(BATCH_INSERT_PROPERTY,
                                                                                   BATCH_INSERT_PROPERTY_DEFAULT));
+                        bulk_insert_count = Integer.parseInt(ycsbProps.getProperty(BULK_INSERT_PROPERTY,
+                                                                                   BULK_INSERT_PROPERTY_DEFAULT));
                         int sleep_wait = min_sleep_wait;
                         for (int i = 0; i < OperationRetries; ++i){
                                 try{
@@ -100,19 +108,65 @@ public class YcsbCouchDbClient extends DB {
                         }
                 }
 	}
-	/**
-     * Insert a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified
-     * record key.
-     *
-     * @param table The name of the table
-     * @param key The record key of the record to insert.
-     * @param values A HashMap of field/value pairs to insert in the record
-     * @return Zero on success, a non-zero error code on error. 
-     */
-	@Override
-	public int insert(String table, String key,
-			HashMap<String, ByteIterator> fields) throws CouchDbException{
 
+        private int send_bulk_insert(String table, List<HashMap<String,String>> reqs){
+		/*
+		 * we will set tablename = database name since couchdb is one giant data
+		 * store with no notion of tables/collections
+		 */
+
+		table = couchDbProperties.getDbName();
+
+                int sleep_wait = min_sleep_wait;
+                for (int i = 0; i < OperationRetries; ++i){
+                        try{
+                                boolean all_or_nothing = false;
+                                dbClient.bulk(reqs, all_or_nothing);
+                                return 0; // Even if we look at the errors, there isn't much we can do.
+                        }catch( CouchDbException e ){
+                                LOGGER.info("Detected exception:"+e.toString()+" when attempting bulk insert");
+                                errorexception = e;                
+                        }
+                        try{
+                                Thread.sleep(sleep_wait);
+                                // In line with YCSB implementation, double-sleep time but keep less than 5 minutes
+                                if( sleep_wait < max_sleep_wait ){
+                                        sleep_wait *= 2;
+                                }
+                        }catch(InterruptedException e){}            
+                }
+                LOGGER.error("Failed to bulk insert operation retry count exceeded");
+                throw errorexception;                
+        }
+        
+	private int aggregate_insert(String table, String key,
+			HashMap<String, ByteIterator> fields) throws CouchDbException{
+                // First we must aggregate the requests
+                List<HashMap<String,String>> list = pending_bulk_inserts.get(table);
+                // Table does not exist, create it
+                if( list == null ){
+                        list = new ArrayList<HashMap<String,String>>();
+                        pending_bulk_inserts.put(table, list);
+                }
+		/*
+		 * convert the String,ByteIterator map passed in by YCSB to
+		 * String,String Map since lightCouch will accept String,String map
+		 */
+		HashMap<String, String> stringFields = StringByteIterator
+				.getStringMap(fields);
+		stringFields.put("_id", key);
+                list.add(stringFields);
+                if( list.size() >= bulk_insert_count ){
+                        int retval =  send_bulk_insert(table, list);
+                        list.clear();
+                        return retval;
+                }
+                return 0;
+        }
+
+	private int single_insert(String table, String key,
+			HashMap<String, ByteIterator> fields) throws CouchDbException{
+                
 		/*
 		 * we will set tablename = database name since couchdb is one giant data
 		 * store with no notion of tables/collections
@@ -157,6 +211,24 @@ public class YcsbCouchDbClient extends DB {
                 }
                 LOGGER.error("Failed to read key {}, operation retry count exceeded", key);
                 throw errorexception;
+        }
+	/**
+     * Insert a record in the database. Any field/value pairs in the specified values HashMap will be written into the record with the specified
+     * record key.
+     *
+     * @param table The name of the table
+     * @param key The record key of the record to insert.
+     * @param values A HashMap of field/value pairs to insert in the record
+     * @return Zero on success, a non-zero error code on error. 
+     */
+	@Override
+	public int insert(String table, String key,
+			HashMap<String, ByteIterator> fields){
+                if( bulk_insert_count == 0 ){
+                        return single_insert( table, key, fields);
+                }else{
+                        return aggregate_insert( table, key, fields);                        
+                }
 	}
 
 	/**
@@ -371,6 +443,17 @@ public class YcsbCouchDbClient extends DB {
 
 	@Override
 	public void cleanup() {
+                // First cler out any pending insert requests
+                Iterator<String> it = pending_bulk_inserts.keySet().iterator();
+                while( it.hasNext() ){
+                        String table = it.next();
+                        List<HashMap<String, String> > reqs = pending_bulk_inserts.get(table);
+                        if( reqs.size() != 0 ){
+                                send_bulk_insert(table, reqs);
+                        }
+                        reqs.clear();
+                }
+                // Shutdown the client
 		dbClient.shutdown();
 	}
 
