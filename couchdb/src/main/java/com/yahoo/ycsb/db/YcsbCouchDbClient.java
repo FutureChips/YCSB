@@ -37,6 +37,8 @@ public class YcsbCouchDbClient extends DB {
         public static final String BATCH_INSERT_PROPERTY_DEFAULT = "false";
         public static final String BULK_INSERT_PROPERTY = "couchdb.bulkinsert";
         public static final String BULK_INSERT_PROPERTY_DEFAULT = "0";
+        public static final String NOCHECK_UPDATE_PROPERTY = "couchdb.nocheckupdate";
+        public static final String NOCHECK_UPDATE_PROPERTY_DEFAULT = "false";
 
 	private CouchDbClient dbClient;
 	private CouchDbProperties couchDbProperties;
@@ -49,6 +51,7 @@ public class YcsbCouchDbClient extends DB {
         int OperationRetries;
         boolean batch_insert;
         int bulk_insert_count;
+        boolean nocheck_update;
 
         HashMap <String, List<HashMap<String,String> > > pending_bulk_inserts;
 	/* YCSB requires a no-arg constructor */
@@ -70,6 +73,8 @@ public class YcsbCouchDbClient extends DB {
                                                                                   BATCH_INSERT_PROPERTY_DEFAULT));
                         bulk_insert_count = Integer.parseInt(ycsbProps.getProperty(BULK_INSERT_PROPERTY,
                                                                                    BULK_INSERT_PROPERTY_DEFAULT));
+                        nocheck_update = Boolean.parseBoolean(ycsbProps.getProperty(NOCHECK_UPDATE_PROPERTY,
+                                                                                   NOCHECK_UPDATE_PROPERTY_DEFAULT));
                         int sleep_wait = min_sleep_wait;
                         for (int i = 0; i < OperationRetries; ++i){
                                 try{
@@ -357,7 +362,10 @@ public class YcsbCouchDbClient extends DB {
 	@Override
 	public int update(String table, String key,
 			HashMap<String, ByteIterator> fields) throws CouchDbException{
-
+                if( nocheck_update ){
+                        // Remove the check for the revision
+                        return insert(table, key, fields);
+                }
 		/*
 		 * we will set tablename = database name since couchdb is one giant data
 		 * store with no notion of tables/collections
